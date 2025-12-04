@@ -1,0 +1,29 @@
+# Secrets - NEVER commit
+include/secrets.h
+
+# PlatformIO build files
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Compiled files
+*.o
+*.a
+*.so
+*.elf
+*.bin
+*.hex
+
+# Logs
+*.log
