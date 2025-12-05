@@ -79,7 +79,8 @@ constexpr uint16_t USDEF_I80_CMD_GET_DEV_INFO = 0x0302;
 
 constexpr uint16_t IT8951_ROTATE_0 = 0;
 constexpr uint16_t IT8951_4BPP = 2;
-constexpr uint16_t IT8951_MODE_2 = 2;
+constexpr uint16_t IT8951_MODE_INIT = 0;  // INIT mode - full clear with flash
+constexpr uint16_t IT8951_MODE_GC16 = 2;  // GC16 mode - 16 grayscale
 constexpr uint16_t IT8951_LDIMG_L_ENDIAN = 0;
 
 constexpr uint16_t DISPLAY_REG_BASE = 0x1000;
@@ -258,8 +259,8 @@ void initTPL5110Done()
 // Signal TPL5110 that we're done - toggle HIGH then LOW to cut power
 void signalTPL5110Done()
 {
-    Serial.println("Waiting 2s before signaling TPL5110...");
-    delay(2000);  // Wait before signaling
+    Serial.println("Waiting 5s before signaling TPL5110...");
+    delay(5000);  // Wait before signaling (allow display refresh to complete)
     
     Serial.println("Signaling TPL5110 DONE - power will be cut");
     Serial.flush();
@@ -1582,10 +1583,10 @@ bool refreshDisplay()
         return false;
     }
 
-    Serial.println("Sending GC16 refresh command (mode 2) using 0x0034...");
+    Serial.println("Sending GC16 refresh command using 0x0034...");
     
     // Use the standard display area command (0x0034) - uses default image buffer
-    if (!it8951DisplayArea(0, 0, g_devInfo.usPanelW, g_devInfo.usPanelH, IT8951_MODE_2))
+    if (!it8951DisplayArea(0, 0, g_devInfo.usPanelW, g_devInfo.usPanelH, IT8951_MODE_GC16))
     {
         Serial.println("Display refresh command failed");
         return false;
@@ -1615,21 +1616,23 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
     
     Serial.printf("MQTT received: %s = %s\n", topic, message.c_str());
     
-    if (topicStr == MQTT_REFRESH_INTERVAL_TOPIC) {
+    // Handle refresh interval from both command topic AND state topic (for retained values on boot)
+    if (topicStr == MQTT_REFRESH_INTERVAL_TOPIC || topicStr == MQTT_REFRESH_INTERVAL_STATE_TOPIC) {
         uint32_t interval = message.toInt();
         if (interval >= 1 && interval <= 12) {
             setRefreshInterval(interval);
-            // Publish updated state
-            if (mqttClient.connected()) {
+            // Only publish state if this came from command topic
+            if (topicStr == MQTT_REFRESH_INTERVAL_TOPIC && mqttClient.connected()) {
                 mqttClient.publish(MQTT_REFRESH_INTERVAL_STATE_TOPIC, String(g_refreshInterval).c_str(), true);
             }
         }
     }
-    else if (topicStr == MQTT_IMAGE_SOURCE_TOPIC) {
+    // Handle image source from both command topic AND state topic (for retained values on boot)
+    else if (topicStr == MQTT_IMAGE_SOURCE_TOPIC || topicStr == MQTT_IMAGE_SOURCE_STATE_TOPIC) {
         if (message == "Cartoon" || message == "Photo") {
             setImageSource(message);
-            // Publish updated state
-            if (mqttClient.connected()) {
+            // Only publish state if this came from command topic
+            if (topicStr == MQTT_IMAGE_SOURCE_TOPIC && mqttClient.connected()) {
                 mqttClient.publish(MQTT_IMAGE_SOURCE_STATE_TOPIC, g_imageSource.c_str(), true);
             }
         }
@@ -1668,10 +1671,14 @@ bool ensureMqttConnected()
     {
         mqttDiscoveryPublished = false;
         Serial.println("MQTT connected.");
-        // Subscribe to settings topics
+        // Subscribe to both command AND state topics (state topics have retained values from HA)
         mqttClient.subscribe(MQTT_REFRESH_INTERVAL_TOPIC);
+        mqttClient.subscribe(MQTT_REFRESH_INTERVAL_STATE_TOPIC);
         mqttClient.subscribe(MQTT_IMAGE_SOURCE_TOPIC);
-        Serial.printf("Subscribed to: %s, %s\n", MQTT_REFRESH_INTERVAL_TOPIC, MQTT_IMAGE_SOURCE_TOPIC);
+        mqttClient.subscribe(MQTT_IMAGE_SOURCE_STATE_TOPIC);
+        Serial.printf("Subscribed to: %s, %s, %s, %s\n", 
+                      MQTT_REFRESH_INTERVAL_TOPIC, MQTT_REFRESH_INTERVAL_STATE_TOPIC,
+                      MQTT_IMAGE_SOURCE_TOPIC, MQTT_IMAGE_SOURCE_STATE_TOPIC);
     }
     return connected;
 }
@@ -1745,7 +1752,7 @@ void publishHomeAssistantDiscovery()
         payload += MQTT_REFRESH_INTERVAL_STATE_TOPIC;
         payload += "\",\"command_topic\":\"";
         payload += MQTT_REFRESH_INTERVAL_TOPIC;
-        payload += "\",\"min\":1,\"max\":12,\"step\":1,\"unit_of_measurement\":\"boots\",\"device\":";
+        payload += "\",\"min\":1,\"max\":12,\"step\":1,\"unit_of_measurement\":\"boots\",\"retain\":true,\"device\":";
         payload += deviceJson;
         payload += "}";
         mqttClient.publish(topic.c_str(), payload.c_str(), true);
@@ -1973,6 +1980,10 @@ void setup()
 
         if (imageStreamed)
         {
+            // Clear the screen first (INIT mode flashes to white, removes ghosting)
+            clearDisplay();
+            checkWatchdog();
+
             const uint32_t refreshStart = millis();
             refreshed = refreshDisplay();
             refreshDurationMs = refreshed ? static_cast<float>(millis() - refreshStart) : 0.0f;
