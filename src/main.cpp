@@ -1092,12 +1092,14 @@ bool fetchLatestGitHubRelease(OtaReleaseInfo &info)
     client.setTimeout(15000);
 
     HTTPClient https;
+    // Use /releases instead of /releases/latest to include pre-releases
+    // /releases/latest excludes pre-releases, but we want to include them
     String url = "https://api.github.com/repos/";
     url += SECRET_GITHUB_OWNER;
     url += "/";
     url += SECRET_GITHUB_REPO;
-    url += "/releases/latest";
-    Serial.println("Checking GitHub releases for OTA...");
+    url += "/releases?per_page=1";  // Get first page (most recent release, including pre-releases)
+    Serial.println("Checking GitHub releases for OTA (including pre-releases)...");
     if (!https.begin(client, url))
     {
         Serial.println("Failed to start OTA release request");
@@ -1121,7 +1123,32 @@ bool fetchLatestGitHubRelease(OtaReleaseInfo &info)
     String body = https.getString();
     https.end();
 
-    if (!extractJsonString(body, "tag_name", info.version))
+    // Parse the first release from the array (most recent, including pre-releases)
+    // The response is an array, so we need to extract the first element
+    int firstReleaseStart = body.indexOf('{');
+    if (firstReleaseStart < 0)
+    {
+        Serial.println("GitHub release JSON missing releases array");
+        return false;
+    }
+    
+    // Find the end of the first release object
+    int braceCount = 0;
+    int firstReleaseEnd = firstReleaseStart;
+    for (int i = firstReleaseStart; i < body.length(); i++)
+    {
+        if (body[i] == '{') braceCount++;
+        if (body[i] == '}') braceCount--;
+        if (braceCount == 0)
+        {
+            firstReleaseEnd = i + 1;
+            break;
+        }
+    }
+    
+    String firstRelease = body.substring(firstReleaseStart, firstReleaseEnd);
+    
+    if (!extractJsonString(firstRelease, "tag_name", info.version))
     {
         Serial.println("GitHub release JSON missing tag_name");
         return false;
@@ -1131,7 +1158,7 @@ bool fetchLatestGitHubRelease(OtaReleaseInfo &info)
                                  ? String(SECRET_GITHUB_FW_ASSET)
                                  : String("firmware.bin");
     const String assetNeedle = "\"name\":\"" + assetName + "\"";
-    const int assetPos = body.indexOf(assetNeedle);
+    const int assetPos = firstRelease.indexOf(assetNeedle);
     if (assetPos < 0)
     {
         Serial.printf("GitHub release missing asset %s\n", assetName.c_str());
@@ -1139,20 +1166,20 @@ bool fetchLatestGitHubRelease(OtaReleaseInfo &info)
     }
 
     const String urlKey = "\"browser_download_url\":\"";
-    int urlPos = body.indexOf(urlKey, assetPos);
+    int urlPos = firstRelease.indexOf(urlKey, assetPos);
     if (urlPos < 0)
     {
         Serial.println("GitHub release missing browser_download_url");
         return false;
     }
     urlPos += urlKey.length();
-    int urlEnd = body.indexOf("\"", urlPos);
+    int urlEnd = firstRelease.indexOf("\"", urlPos);
     if (urlEnd < 0)
     {
         Serial.println("GitHub release URL parse failed");
         return false;
     }
-    info.downloadUrl = body.substring(urlPos, urlEnd);
+    info.downloadUrl = firstRelease.substring(urlPos, urlEnd);
     return true;
 }
 
