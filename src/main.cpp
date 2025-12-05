@@ -1631,12 +1631,22 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
     // Handle refresh interval from command topic only (state topic is for device to publish, not receive)
     if (topicStr == MQTT_REFRESH_INTERVAL_TOPIC) {
         uint32_t interval = message.toInt();
+        Serial.printf("Received refresh interval command: %u\n", interval);
         if (interval >= 1 && interval <= 12) {
             setRefreshInterval(interval);
-            // Publish updated state back to state topic (retained)
+            // Publish updated state back to state topic (retained) - HA needs this to update the UI
             if (mqttClient.connected()) {
-                mqttClient.publish(MQTT_REFRESH_INTERVAL_STATE_TOPIC, String(g_refreshInterval).c_str(), true);
+                String stateValue = String(g_refreshInterval);
+                Serial.printf("Publishing refresh interval state: %s\n", stateValue.c_str());
+                bool published = mqttClient.publish(MQTT_REFRESH_INTERVAL_STATE_TOPIC, stateValue.c_str(), true);
+                if (!published) {
+                    Serial.println("Failed to publish refresh interval state!");
+                } else {
+                    Serial.println("Refresh interval state published successfully");
+                }
             }
+        } else {
+            Serial.printf("Invalid refresh interval: %u (must be 1-12)\n", interval);
         }
     }
     // Handle image source from command topic only (state topic is for device to publish, not receive)
@@ -1913,8 +1923,8 @@ void setup()
             // Process any pending MQTT messages (e.g., refresh interval, image source)
             if (ensureMqttConnected())
             {
-                Serial.println("Waiting for MQTT messages (2 seconds)...");
-                for (int i = 0; i < 40; i++) {  // 40 x 50ms = 2 seconds
+                Serial.println("Waiting for MQTT messages (5 seconds)...");
+                for (int i = 0; i < 100; i++) {  // 100 x 50ms = 5 seconds (longer to catch commands)
                     mqttClient.loop();
                     delay(50);
                 }
@@ -2030,6 +2040,16 @@ void setup()
     {
         ensureMqttConnected();
         publishTelemetry(refreshed, refreshDurationMs, batteryVoltage);
+        
+        // Process any pending MQTT commands (e.g., refresh interval, image source changes)
+        // This allows HA to control the device even after it's done refreshing
+        Serial.println("Processing MQTT commands (3 seconds)...");
+        for (int i = 0; i < 60; i++) {  // 60 x 50ms = 3 seconds
+            mqttClient.loop();
+            delay(50);
+        }
+        Serial.printf("Final settings: Image source = %s, Refresh interval = %u\n", 
+                      g_imageSource.c_str(), g_refreshInterval);
     }
 
     if (shouldRefresh && !refreshed)
