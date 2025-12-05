@@ -511,7 +511,7 @@ bool it8951GetVCOM(int16_t &vcomMv)
 bool it8951WaitForDisplayReady()
 {
     uint16_t busy = 1;
-    const uint32_t deadline = millis() + 10000;
+    const uint32_t deadline = millis() + 30000;  // Increased timeout for large displays (30s)
     while (millis() < deadline)
     {
         if (!it8951ReadReg(LUTAFSR, busy))
@@ -831,6 +831,10 @@ bool clearDisplay()
         Serial.println("Clear display timeout");
         return false;
     }
+
+    // Allow time for physical e-ink settling after clear
+    Serial.println("Clear complete - allowing 2s for e-ink settling...");
+    delay(2000);  // 2 seconds for clear (INIT mode is faster than GC16)
 
     Serial.println("Display cleared successfully");
     return true;
@@ -1600,6 +1604,14 @@ bool refreshDisplay()
         Serial.println("Display refresh timeout");
         return false;
     }
+    
+    // CRITICAL: Add settling delay after controller reports ready
+    // The IT8951 controller reports ready when command processing is done,
+    // but the physical e-ink particles need additional time to settle,
+    // especially for large displays (10.3") using GC16 mode.
+    // Without this delay, power can be cut mid-refresh causing smearing.
+    Serial.println("Controller reports ready - allowing 3s for physical e-ink settling...");
+    delay(3000);  // 3 second settling time for e-ink particles
     
     Serial.println("Display refresh done");
     return true;
