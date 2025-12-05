@@ -1851,24 +1851,38 @@ float readBatteryVoltage()
     }
 
     const uint8_t adcPin = static_cast<uint8_t>(PIN_BATTERY_ADC);
-    pinMode(adcPin, INPUT);
-    analogSetPinAttenuation(adcPin, ADC_11db);
-    analogReadResolution(12);
-    const uint8_t samples = 8;
+    
+    // Configure ADC once (these settings persist)
+    static bool adcConfigured = false;
+    if (!adcConfigured)
+    {
+        pinMode(adcPin, INPUT);
+        analogSetPinAttenuation(adcPin, ADC_11db);
+        analogReadResolution(12);
+        delay(10);  // Let ADC settle after configuration
+        adcConfigured = true;
+    }
+    
+    // Take more samples with longer delays for better noise filtering
+    // ESP32 ADC is noisy, especially when WiFi is active
+    const uint8_t samples = 32;  // Increased from 8 to 32
     uint32_t acc = 0;
     for (uint8_t i = 0; i < samples; ++i)
     {
         acc += analogReadMilliVolts(adcPin);
-        delay(2);
+        delay(5);  // Increased delay from 2ms to 5ms for better stability
     }
     float averageMv = acc / static_cast<float>(samples);
+    
     if (averageMv <= 0)
     {
         Serial.println("Battery measurement invalid (<=0mV)");
         return NAN;
     }
+    
     const float voltage = (averageMv / 1000.0f) * BATTERY_VOLTAGE_DIVIDER;
-    Serial.printf("Battery ADC GPIO%d: %.0fmV -> %.3fV\n", adcPin, averageMv, voltage);
+    Serial.printf("Battery ADC GPIO%d: %.0fmV (avg of %d samples) -> %.3fV\n", 
+                  adcPin, averageMv, samples, voltage);
     return voltage;
 }
 
