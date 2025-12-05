@@ -1628,23 +1628,23 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
     
     Serial.printf("MQTT received: %s = %s\n", topic, message.c_str());
     
-    // Handle refresh interval from both command topic AND state topic (for retained values on boot)
-    if (topicStr == MQTT_REFRESH_INTERVAL_TOPIC || topicStr == MQTT_REFRESH_INTERVAL_STATE_TOPIC) {
+    // Handle refresh interval from command topic only (state topic is for device to publish, not receive)
+    if (topicStr == MQTT_REFRESH_INTERVAL_TOPIC) {
         uint32_t interval = message.toInt();
         if (interval >= 1 && interval <= 12) {
             setRefreshInterval(interval);
-            // Only publish state if this came from command topic
-            if (topicStr == MQTT_REFRESH_INTERVAL_TOPIC && mqttClient.connected()) {
+            // Publish updated state back to state topic (retained)
+            if (mqttClient.connected()) {
                 mqttClient.publish(MQTT_REFRESH_INTERVAL_STATE_TOPIC, String(g_refreshInterval).c_str(), true);
             }
         }
     }
-    // Handle image source from both command topic AND state topic (for retained values on boot)
-    else if (topicStr == MQTT_IMAGE_SOURCE_TOPIC || topicStr == MQTT_IMAGE_SOURCE_STATE_TOPIC) {
+    // Handle image source from command topic only (state topic is for device to publish, not receive)
+    else if (topicStr == MQTT_IMAGE_SOURCE_TOPIC) {
         if (message == "Cartoon" || message == "Photo") {
             setImageSource(message);
-            // Only publish state if this came from command topic
-            if (topicStr == MQTT_IMAGE_SOURCE_TOPIC && mqttClient.connected()) {
+            // Publish updated state back to state topic (retained)
+            if (mqttClient.connected()) {
                 mqttClient.publish(MQTT_IMAGE_SOURCE_STATE_TOPIC, g_imageSource.c_str(), true);
             }
         }
@@ -1683,14 +1683,19 @@ bool ensureMqttConnected()
     {
         mqttDiscoveryPublished = false;
         Serial.println("MQTT connected.");
-        // Subscribe to both command AND state topics (state topics have retained values from HA)
+        // Subscribe to command topics only (state topics are for device to publish, not receive)
         mqttClient.subscribe(MQTT_REFRESH_INTERVAL_TOPIC);
-        mqttClient.subscribe(MQTT_REFRESH_INTERVAL_STATE_TOPIC);
         mqttClient.subscribe(MQTT_IMAGE_SOURCE_TOPIC);
-        mqttClient.subscribe(MQTT_IMAGE_SOURCE_STATE_TOPIC);
-        Serial.printf("Subscribed to: %s, %s, %s, %s\n", 
-                      MQTT_REFRESH_INTERVAL_TOPIC, MQTT_REFRESH_INTERVAL_STATE_TOPIC,
-                      MQTT_IMAGE_SOURCE_TOPIC, MQTT_IMAGE_SOURCE_STATE_TOPIC);
+        Serial.printf("Subscribed to: %s, %s\n", 
+                      MQTT_REFRESH_INTERVAL_TOPIC, MQTT_IMAGE_SOURCE_TOPIC);
+        
+        // Process any pending messages (including retained ones from broker)
+        mqttClient.loop();
+        
+        // Publish current states immediately after connecting (before discovery)
+        // This ensures HA has the correct state even if discovery hasn't run yet
+        mqttClient.publish(MQTT_REFRESH_INTERVAL_STATE_TOPIC, String(g_refreshInterval).c_str(), true);
+        mqttClient.publish(MQTT_IMAGE_SOURCE_STATE_TOPIC, g_imageSource.c_str(), true);
     }
     return connected;
 }
@@ -1754,6 +1759,7 @@ void publishHomeAssistantDiscovery()
     publishSensor("wifi", "Cartoon Frame WiFi RSSI", "dBm", "wifi_rssi", "signal_strength", "measurement");
     publishSensor("refresh", "Cartoon Frame Refresh Time", "ms", "refresh_ms", nullptr, "measurement");
     publishSensor("boot_count", "Cartoon Frame Boot Count", nullptr, "boot_count", nullptr, "measurement");
+    publishSensor("firmware", "Cartoon Frame Firmware Version", nullptr, "firmware_version", nullptr, nullptr);
 
     // Publish refresh interval as a number entity (configurable from HA)
     {
@@ -1770,9 +1776,6 @@ void publishHomeAssistantDiscovery()
         mqttClient.publish(topic.c_str(), payload.c_str(), true);
     }
 
-    // Publish current refresh interval state
-    mqttClient.publish(MQTT_REFRESH_INTERVAL_STATE_TOPIC, String(g_refreshInterval).c_str(), true);
-
     // Publish image source as a select entity (dropdown in HA)
     {
         String topic = String(MQTT_DISCOVERY_PREFIX) + "/select/" + MQTT_DEVICE_ID + "_image_source/config";
@@ -1788,10 +1791,12 @@ void publishHomeAssistantDiscovery()
         mqttClient.publish(topic.c_str(), payload.c_str(), true);
     }
 
-    // Publish current image source state
-    mqttClient.publish(MQTT_IMAGE_SOURCE_STATE_TOPIC, g_imageSource.c_str(), true);
-
     mqttDiscoveryPublished = true;
+    
+    // Publish current states AFTER discovery config (HA needs config before state)
+    // This ensures HA picks up the retained state correctly
+    mqttClient.publish(MQTT_REFRESH_INTERVAL_STATE_TOPIC, String(g_refreshInterval).c_str(), true);
+    mqttClient.publish(MQTT_IMAGE_SOURCE_STATE_TOPIC, g_imageSource.c_str(), true);
 }
 
 void publishTelemetry(bool refreshSuccess, float refreshDurationMs, float batteryVoltage)
@@ -1819,7 +1824,9 @@ void publishTelemetry(bool refreshSuccess, float refreshDurationMs, float batter
     payload += String(g_bootCount);
     payload += ",\"refresh_interval\":";
     payload += String(g_refreshInterval);
-    payload += "}";
+    payload += ",\"firmware_version\":\"";
+    payload += FIRMWARE_VERSION;
+    payload += "\"}";
 
     mqttClient.publish(MQTT_STATE_TOPIC, payload.c_str(), true);
     mqttClient.loop();
