@@ -1185,8 +1185,13 @@ bool fetchLatestGitHubRelease(OtaReleaseInfo &info)
 
 bool maybePerformOtaUpdate()
 {
+    Serial.printf("OTA: Checking for updates (current version: %s)\n", FIRMWARE_VERSION);
+    
     if (strlen(SECRET_GITHUB_OWNER) == 0 || strlen(SECRET_GITHUB_REPO) == 0)
+    {
+        Serial.println("OTA skipped; GitHub owner/repo not configured");
         return false;
+    }
     if (strcmp(FIRMWARE_VERSION, "0.0.0") == 0)
     {
         Serial.println("OTA skipped; firmware version not set");
@@ -1195,15 +1200,22 @@ bool maybePerformOtaUpdate()
 
     OtaReleaseInfo releaseInfo;
     if (!fetchLatestGitHubRelease(releaseInfo))
+    {
+        Serial.println("OTA: Failed to fetch release info from GitHub");
         return false;
+    }
 
     const String currentVersion = String(FIRMWARE_VERSION);
     const String normalizedCurrent = normalizeVersionTag(currentVersion);
     const String normalizedRemote = normalizeVersionTag(releaseInfo.version);
+    
+    Serial.printf("OTA: Current=%s (normalized: %s), Remote=%s (normalized: %s)\n",
+                  currentVersion.c_str(), normalizedCurrent.c_str(),
+                  releaseInfo.version.c_str(), normalizedRemote.c_str());
 
     if (normalizedRemote.equalsIgnoreCase(normalizedCurrent))
     {
-        Serial.println("OTA: already running latest release");
+        Serial.printf("OTA: already running latest release (%s)\n", normalizedCurrent.c_str());
         return false;
     }
 
@@ -1950,16 +1962,26 @@ void setup()
     bool refreshed = false;
     float refreshDurationMs = 0.0f;
 
+    // Always connect to WiFi to check for OTA updates (on every boot)
+    // This ensures firmware updates are available even when not refreshing display
+    if (connectWiFi())
+    {
+        checkWatchdog();  // Check after WiFi connection
+        
+        // Check for OTA updates on every boot (not just when refreshing)
+        maybePerformOtaUpdate();
+        
+        checkWatchdog();  // Check after OTA check
+        
+        // If OTA update was applied, device will reboot here
+        // (maybePerformOtaUpdate calls httpUpdate.rebootOnUpdate(true))
+    }
+
     if (shouldRefresh)
     {
-        // Connect to WiFi and download new image
+        // Connect to WiFi if not already connected (should be, but just in case)
         if (connectWiFi())
         {
-            checkWatchdog();  // Check after WiFi connection
-            
-            maybePerformOtaUpdate();
-            
-            checkWatchdog();  // Check after OTA check
             
             // Process any pending MQTT messages (e.g., refresh interval, image source)
             if (ensureMqttConnected())
@@ -2025,8 +2047,15 @@ void setup()
 
         bool imageStreamed = false;
         bool attemptedPng = false;
+        
         if (pngOnDisk)
         {
+            // Clear the screen first (INIT mode flashes to white, removes ghosting)
+            // This must be done BEFORE streaming the image, otherwise it overwrites the image buffer
+            clearDisplay();
+            checkWatchdog();
+            
+            // Now stream the image to the buffer (after clearing)
             attemptedPng = true;
             if (decodePngFromSpiffs(PNG_STORAGE_PATH))
             {
@@ -2050,10 +2079,6 @@ void setup()
 
         if (imageStreamed)
         {
-            // Clear the screen first (INIT mode flashes to white, removes ghosting)
-            clearDisplay();
-            checkWatchdog();
-
             const uint32_t refreshStart = millis();
             refreshed = refreshDisplay();
             refreshDurationMs = refreshed ? static_cast<float>(millis() - refreshStart) : 0.0f;
@@ -2071,8 +2096,8 @@ void setup()
     }
     else
     {
-        Serial.println("Skipping display refresh (not due yet) - no WiFi needed");
-        // Don't connect to WiFi - just shut down to save battery
+        Serial.println("Skipping display refresh (not due yet)");
+        // WiFi was already connected for OTA check above, so we can use it for telemetry
     }
 
     // Publish telemetry
